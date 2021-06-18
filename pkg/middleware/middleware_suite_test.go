@@ -20,13 +20,11 @@
 package middleware
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
-
 	"testing"
+
+	"kubevirt.io/client-go/testutils"
 )
 
 func TestEndpoints(t *testing.T) {
-	RegisterFailHandler(Fail)
-	RunSpecs(t, "Endpoints Suite")
+	testutils.KubeVirtTestSuiteSetup(t)
 }

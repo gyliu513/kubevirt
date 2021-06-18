@@ -1,289 +1,323 @@
 # Getting Started
 
-A quick start guide to get KubeVirt up and running inside Vagrant.
+A quick start guide to get KubeVirt up and running inside our container-based
+development cluster.
 
-**Note**: This guide was tested on Fedora 23 and Fedora 25.
+## I just want it built and run it on my cluster
 
-**Note:** Fedora 24 is known to have a bug which affects our vagrant setup.
+First, point the `Makefile` to the Docker registry of your choice:
 
+```bash
+export DOCKER_PREFIX=index.docker.io/myrepo
+export DOCKER_TAG=mybuild
+```
+
+Then build the manifests and images:
+
+```bash
+make && make push
+```
+
+Finally, push the manifests to your cluster:
+
+```bash
+kubectl create -f _out/manifests/release/kubevirt-operator.yaml
+kubectl create -f _out/manifests/release/kubevirt-cr.yaml
+```
+
+### Docker Desktop for Mac
+
+The Bazel build system does not support the macOS keychain. Please ensure that
+you deactivate the option `Securely store Docker logins in macOS keychain` in
+the Docker preferences. After restarting the Docker service, log in with `docker
+login`. Your `$HOME/.docker/config.json` should look like:
+
+```json
+{
+  "auths" : {
+    "https://index.docker.io/v1/" : {
+      "auth" : "XXXXXXXXXX"
+    }
+  },
+  "credSstore" : ""
+}
+```
 
 ## Building
 
-### Go (1.8 or higher)
+The KubeVirt build system runs completely inside Docker. 
+In order to build KubeVirt you need to have `docker` and `rsync` installed. 
+You also need to have `docker` running, and have the 
+[permissions](https://docs.docker.com/install/linux/linux-postinstall/#manage-docker-as-a-non-root-user) 
+to access it.
 
-[Go](https://golang.org) needs to be setup to be able to compile the sources.
+**Note:** For running KubeVirt in the dockerized cluster, **nested
+virtualization** must be enabled - [see here for instructions for Fedora](https://docs.fedoraproject.org/en-US/quick-docs/using-nested-virtualization-in-kvm/index.html).
+As an alternative [software emulation](software-emulation.md) can be allowed.
+Enabling nested virtualization should be preferred.
 
-**Note:** Go is pretty picky about paths, thus use the suggested ones.
+### Dockerized environment
 
-```bash
-    # If you haven't set it already, set a GOPATH
-    echo "export GOPATH=~/go" >> ~/.bashrc
-    echo "export PATH=$PATH:$GOPATH/bin" >> ~/.bashrc
-    source ~/.bashrc
+Runs master and nodes containers. Each one of them runs virtual machines via QEMU.
+In addition it runs `dnsmasq` and Docker registry containers.
 
-    mkdir -p ~/go
+### Compatibility
 
-    sudo dnf install golang
-```
+The minimum compatible Kubernetes version is 1.15.0. Important features required
+for scheduling and memory are missing or incompatible with previous versions.
 
-**Note:** Some code within k8s.io/client-go and k8s.io/apimachinery uses
-features from the Go standard libaries introduced in version 1.8.
+### Compile and run it
 
-If needed, a helpful tool to dynamically manage multiple versions of Go is
-[gimme](https://github.com/travis-ci/gimme)
-
-### Vagrant
-
-[Vagrant](https://www.vagrantup.com/) is used to bring up a development and
-demo environment:
+To build all required artifacts and launch the
+dockerized environment, clone the KubeVirt repository, `cd` into it, and:
 
 ```bash
-    sudo dnf install vagrant vagrant-libvirt
-    sudo systemctl restart virtlogd # Work around rpm packaging bug
-    sudo systemctl restart libvirtd
+# Build and deploy KubeVirt on Kubernetes in our vms inside containers
+export KUBEVIRT_PROVIDER=k8s-1.18 # this is also the default if no KUBEVIRT_PROVIDER is set
+make cluster-up
+make cluster-sync
 ```
 
-On some systems Vagrant will always ask you for your sudo password when you try
-to do something with a VM. To avoid retyping your password all the time you can
-add yourself to the `libvirt` group.
+This will create a virtual machine called `node01` which acts as node and master. To create
+more nodes which will register themselves on master, you can use the
+`KUBEVIRT_NUM_NODES` environment variable. This would create a master and one
+node:
 
 ```bash
-sudo gpasswd -a ${USER} libvirt
-newgrp libvirt
+export KUBEVIRT_NUM_NODES=2 # schedulable master + one additional node
+make cluster-up
 ```
 
-On CentOS/RHEL 7 you might also need to change the libvirt connection string to be able to see all libvirt information:
-
-```
-export LIBVIRT_DEFAULT_URI=qemu:///system
-```
-
-### Build dependencies
-
-Now we can finally get to the sources, before building KubeVirt we'll need
-to install a few build requirements:
+You can use the `KUBEVIRT_MEMORY_SIZE` environment 
+variable to increase memory size per node. Normally you do not need it, 
+because default node memory size is set.
 
 ```bash
-    # We are interfacing with libvirt
-    sudo dnf install libvirt-devel
-
-    cd $GOPATH
-    # Use goimports for package import ordering
-    go get golang.org/x/tools/cmd/goimports
-    # Setup glide which is used to track dependencies
-    go get github.com/Masterminds/glide
+export KUBEVIRT_MEMORY_SIZE=8192M # node has 8GB memory size
+make cluster-up
 ```
 
-**Note:** Make sure you're using the glide version from your $GOPATH. If you
-have a version installed via your system's package manager, it's likely older
-and might not be able to work with k8s.io/client-go.
-[Github Issue](https://github.com/Masterminds/glide/issues/615)
+**Note:** If you see the error below, 
+check if the MTU of the container and the host are the same. 
+If not, try to adjust them to be the same. 
+See [issue 2667](https://github.com/kubevirt/kubevirt/issues/2667)
+for more detailed info.
+```
+# ./cluster-up/kubectl.sh get pods --all-namespaces
+NAMESPACE     NAME                                      READY   STATUS             RESTARTS   AGE
+cdi           cdi-operator-5db567b486-grtk9             0/1     ImagePullBackOff   0          42m
 
-### Sources
+Back-off pulling image "kubevirt/cdi-operator:v1.10.1"
+```
 
-Now we can clone the project into your `$GOPATH`:
+To destroy the created cluster, type:
+
+```
+make cluster-down
+```
+
+**Note:** Whenever you type `make cluster-down && make cluster-up`, you will
+have a completely fresh cluster to play with.
+
+#### Sync specific components
+
+**Note:** The following is meant for allowing faster iteration on small changes to components that support it.
+Not every component is that simply exchangable without a full re-deploy. Always test with the final SHA based method in the end.
+
+In situations where you just want to work on a single component and rollout updates
+without re-deploying the whole environment, you can tell kubevirt to deploy using tags.
+
+```sh
+export KUBEVIRT_ONLY_USE_TAGS=true
+```
+
+After this any `make cluster-sync` will use the `DOCKER_TAG` for pulling images instead of SHAs.
+This means you can simply rebuild the component that changed and then kill the respective pods to
+cause a fresh pull:
+
+```sh
+PUSH_TARGETS='virt-api' ./hack/bazel-push-images.sh
+kubectl delete po -n kubevirt -l kubevirt.io=virt-api
+```
+
+Once the respective component is back, it should be using your new build.
+
+### Accessing the containerized nodes via ssh
+
+Based on the used cluster, node names might be different.
+You can get the names from following command:
 
 ```bash
-    git clone https://github.com/kubevirt/kubevirt.git $GOPATH/src/kubevirt.io/kubevirt
-    cd $GOPATH/src/kubevirt.io/kubevirt
+# cluster-up/kubectl.sh get nodes
+NAME     STATUS   ROLES           AGE   VERSION
+node01   Ready    master,worker   13s   v1.18.3
 ```
 
-And finally build all required artifacts and launch the
-Vagrant environment:
-
-```bash
-    # Building and deploying kubevirt in Vagrant
-    vagrant up
-    make vagrant-deploy
+Then you can execute the following command to access the node:
+```
+# ./cluster-up/ssh.sh node01
+[vagrant@node01 ~]$
 ```
 
-This will create a VM called `master` which acts as Kubernetes master and then
-deploy Kubevirt there. To create one or more nodes which will register
-themselves on master, you can use the `VAGRANT_NUM_NODES` environment variable.
-This would create a master and two nodes:
+### Automatic Code Generation
 
-```bash
-    VAGRANT_NUM_NODES=2 vagrant up
-```
-
-However, just running `master` is enough for most development tasks.
-
-You could also run some build steps individually:
-
-```bash
-    # To build all binaries
-    make
-
-    # Or to build just one binary
-    make build WHAT=cmd/virt-controller
-
-    # To build all docker images
-    make docker
-```
-
-### Code generation
-
-**Note:** This is only important if you plan to modify sources, you don't need code generators just for building
-
-Currently we use code generators for two purposes:
-
- * Generating swagger documentation out of struct and field comments for [go-restful](https://github.com/emicklei/go-restful)
- * Generating mock interfaces for [gomock](https://github.com/golang/mock)
-
-So if you add or modify comments on structs in `pkg/api/v1` or if you change
-interface definitions, you need to rerun the code generator.
-
-First install the generator tools:
-
-```bash
-go get -u github.com/golang/mock/gomock
-go get -u github.com/rmohr/mock/mockgen
-go get -u github.com/rmohr/go-swagger-utils/swagger-doc
-```
-
-Then regenerate the code:
+Some of the code in our source tree is auto-generated (see `git ls-files|grep '^pkg/.*generated.*go$'`).
+On certain occasions (but not when building git-cloned code), you need to regenerate it
+with:
 
 ```bash
 make generate
 ```
+
+Typical cases where code regeneration should be triggered are:
+
+ * When changing APIs, REST paths or their comments (gets reflected in the API documentation, clients, generated cloners...)
+ * When changing mocked interfaces (the mock generator needs to update the generated mocks)
+
+We have a check in our CI system so that you do not miss when `make generate` needs to be called.
+
+ * Another case is when kubevirtci is updated, in order to vendor cluster-up run `hack/bump-kubevirtci.sh` and then
+   `make generate`
 
 ### Testing
 
 After a successful build you can run the *unit tests*:
 
 ```bash
+    make
     make test
 ```
 
-They don't require vagrant. To run the *functional tests*, make sure you have set
-up [Vagrant](#vagrant). Then run
+They do not need a running KubeVirt environment to succeed.
+To run the *functional tests*, make sure you have set
+up a dockerized environment. Then run
 
 ```bash
-    make vagrant-deploy # synchronize with your code, if necessary
-    make functest # run the functional tests against the Vagrant VMs
+    make cluster-sync # synchronize with your code, if necessary
+    make functest # run the functional tests against the dockerized VMs
 ```
+
+If you would like to run specific functional tests only, you can leverage `ginkgo`
+command line options as follows (run a specified suite):
+
+```
+    FUNC_TEST_ARGS='-focus=vmi_networking_test -regexScansFilePath' make functest
+```
+
+In addition, if you want to run a specific test or tests you can prepend any `Describe`,
+`Context` and `It` statements of your test with an `F` and Ginkgo will only run items
+that are marked with the prefix. Remember to remove the prefix before issuing
+your pull request.
+
+For additional information check out the [Ginkgo focused specs documentation](http://onsi.github.io/ginkgo/#focused-specs)
 
 ## Use
 
-Congratulations you are still with us and you have build KubeVirt.
+Congratulations, you are still with us and you have built KubeVirt.
 
-Now it's time to get hands on and give it a try.
-
-### Cockpit
-
-Cockpit is exposed on <http://192.168.200.2:9090>
-The default login is `root:vagrant`
-
-It can be used to view the cluster and verify the running state of
-components within the cluster.
-More information can be found on that [project's site](http://cockpit-project.org/guide/latest/feature-kubernetes.html).
+Now it is time to get hands on and give it a try.
 
 ### Create a first Virtual Machine
 
-Finally start a VM called `testvm`:
+Finally start a VMI called `vmi-ephemeral`:
 
 ```bash
-    # This can be done from your GIT repo, no need to log into a vagrant VM
-    # You might want to watch the Cockpit Cluster topology while running these commands
+    # This can be done from your GIT repo, no need to log into a VMI
 
-    # Create a VM
-    ./cluster/kubectl.sh create -f cluster/vm.json
+    # Create a VMI
+    ./cluster-up/kubectl.sh create -f examples/vmi-ephemeral.yaml
 
-    # Sure? Let's list all created VMs
-    ./cluster/kubectl.sh get vms
+    # Sure? Let's list all created VMIs
+    ./cluster-up/kubectl.sh get vmis
 
     # Enough, let's get rid of it
-    ./cluster/kubectl.sh delete -f cluster/vm.json
+    ./cluster-up/kubectl.sh delete -f examples/vmi-ephemeral.yaml
 
 
     # You can actually use kubelet.sh to introspect the cluster in general
-    ./cluster/kubectl.sh get pods
+    ./cluster-up/kubectl.sh get pods
+
+    # To check the running kubevirt services you need to introspect the `kubevirt` namespace:
+    ./cluster-up/kubectl.sh -n kubevirt get pods
 ```
 
-This will start a VM on master or one of the running nodes with a macvtap and a
+This will start a VMI on master or one of the running nodes with a macvtap and a
 tap networking device attached.
-
-Basic verification is possible by running
-
-```bash
-    bash cluster/quickcheck.sh
-```
 
 #### Example
 
 ```bash
-$ ./cluster/kubectl.sh create -f cluster/vm.json
-vm "testvm" created
+$ ./cluster-up/kubectl.sh create -f examples/vmi-ephemeral.yaml
+vm "vmi-ephemeral" created
 
-$ ./cluster/kubectl.sh get pods
-NAME                        READY     STATUS    RESTARTS   AGE
-haproxy                     1/1       Running   4          10h
-virt-api                    1/1       Running   1          10h
-virt-controller             1/1       Running   1          10h
-virt-handler-z90mp          1/1       Running   1          10h
-virt-launcher-testvm9q7es   1/1       Running   0          10s
+$ ./cluster-up/kubectl.sh get pods
+NAME                              READY     STATUS    RESTARTS   AGE
+virt-launcher-vmi-ephemeral9q7es  1/1       Running   0          10s
 
-$ ./cluster/kubectl.sh get vms
-NAME      LABELS                        DATA
-testvm    kubevirt.io/nodeName=master   {"apiVersion":"kubevirt.io/v1alpha1","kind":"VM","...
+$ ./cluster-up/kubectl.sh get vmis
+NAME            AGE   PHASE     IP              NODENAME
+vmi-ephemeral   11s   Running   10.244.140.77   node02
 
-$ ./cluster/kubectl.sh get vms -o json
+$ ./cluster-up/kubectl.sh get vmis -o json
 {
     "kind": "List",
     "apiVersion": "v1",
     "metadata": {},
     "items": [
         {
-            "apiVersion": "kubevirt.io/v1alpha1",
-            "kind": "VM",
+            "apiVersion": "kubevirt.io/v1alpha2",
+            "kind": "VirtualMachine",
             "metadata": {
                 "creationTimestamp": "2016-12-09T17:54:52Z",
                 "labels": {
                     "kubevirt.io/nodeName": "master"
                 },
-                "name": "testvm",
+                "name": "vmi-ephemeral",
                 "namespace": "default",
                 "resourceVersion": "102534",
-                "selfLink": "/apis/kubevirt.io/v1alpha1/namespaces/default/vms/testvm",
+                "selfLink": "/apis/kubevirt.io/v1alpha2/namespaces/default/virtualmachineinstances/testvm",
                 "uid": "7e89280a-be62-11e6-a69f-525400efd09f"
             },
             "spec": {
     ...
 ```
 
-### Accessing the Domain via the VMs SPICE subresource
+### Accessing the Domain via VNC
 
-First make sure you have `remote-viewer` installed. On Fedora run
+First make sure you have `remote-viewer` installed. On Fedora run:
 
 ```bash
 dnf install virt-viewer
 ```
 
-Then, after you made sure that the VM `testvm` is running, type
+Windows users can [download remote-viewer from virt-manager.org](https://virt-manager.org/download/), and may need
+to add virt-viewer installation folder to their `PATH`.
+
+Then, after you made sure that the VMI `vmi-ephemeral` is running, type:
 
 ```
-cluster/kubectl.sh spice testvm
+cluster-up/virtctl.sh vnc vmi-ephemeral
 ```
 
-to start a remote session with `remote-viewer`.
+This will start a remote session with `remote-viewer`.
 
-To print the connection details to stdout, run
+`cluster-up/virtctl.sh` is a wrapper around `virtctl`. `virtctl` brings all
+virtual machine specific commands with it and is a supplement to `kubectl`.
 
-```bash
-cluster/kubectl.sh spice testvm --details
-```
+**Note:** If accessing your cluster through ssh, be sure to forward your X11 session in order to launch `virtctl vnc`.
 
-To directly query the config, do
+### Bazel and KubeVirt
 
-```bash
-curl 192.168.200.2:8184/apis/kubevirt.io/v1alpha1/namespaces/default/vms/testvm/spice -H"Accept:text/plain"
-```
+#### Build.bazel merge conflicts
 
-### Accessing the Domain via the SPICE primary resource
+You may encounter merge conflicts in `BUILD.bazel` files when creating pull
+requests. Normally you can resolve these conflicts extremely easy by simply
+accepting the new upstream version of the files and run `make` again. That will
+update the build files with your changes.
 
-Since `kubectl` does not support TPR subresources yet, the above `cluster/kubectl.sh spice` magic is just a wrapper.
+#### Build.bazel build failures when switching branches
 
-## API Documentation
-
-The combined swagger documentation of Kubernetes and KubeVirt can be accessed under [/swaggerapi](http://192.168.200.2:8184/swaggerapi).
-There is also an embedded swagger-ui instance running inside the cluster. It can be accessed via [/swagger-ui](http://192.168.200.2:8184/swaggerapi).
+In case you work on two or more branches, `make generate` for example might fail,
+the reason is there is a Bazel server in the background, and when the base image changes,
+it should be auto restarted, the detection does not always work perfectly.
+To solve it, run `docker stop kubevirt-bazel-server`, which will stop the Bazel server.

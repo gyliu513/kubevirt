@@ -17,16 +17,14 @@
  *
  */
 
-package services_test
+package services
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
-
 	"testing"
+
+	"kubevirt.io/client-go/testutils"
 )
 
 func TestServices(t *testing.T) {
-	RegisterFailHandler(Fail)
-	RunSpecs(t, "Services Suite")
+	testutils.KubeVirtTestSuiteSetup(t)
 }

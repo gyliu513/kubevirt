@@ -4,7 +4,9 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/kubevirt/kubevirt)](https://goreportcard.com/report/github.com/kubevirt/kubevirt)
 [![Licensed under Apache License version 2.0](https://img.shields.io/github/license/kubevirt/kubevirt.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Coverage Status](https://img.shields.io/coveralls/kubevirt/kubevirt/master.svg)](https://coveralls.io/github/kubevirt/kubevirt?branch=master)
-[![Visit our IRC channel](https://kiwiirc.com/buttons/irc.freenode.net/kubevirt.png)](https://kiwiirc.com/client/irc.freenode.net/#kubevirt)
+[![CII Best Practices](https://bestpractices.coreinfrastructure.org/projects/3203/badge)](https://bestpractices.coreinfrastructure.org/projects/3203)
+[![Visit our Slack channel](https://img.shields.io/badge/slack-@kubernetes/kubevirt--dev-40abb8.svg?logo=slack)](https://kubernetes.slack.com/?redir=%2Farchives%2FC0163DT0R8X)
+[![FOSSA Status](https://app.fossa.io/api/projects/git%2Bgithub.com%2Fkubevirt%2Fkubevirt.svg?type=shield)](https://app.fossa.io/projects/git%2Bgithub.com%2Fkubevirt%2Fkubevirt?ref=badge_shield)
 
 **KubeVirt** is a virtual machine management add-on for Kubernetes.
 The aim is to provide a common ground for virtualization solutions on top of
@@ -18,7 +20,7 @@ Kubernetes.
 
 At its core, KubeVirt extends [Kubernetes][k8s] by adding
 additional virtualization resource types (especially the `VM` type) through
-[Kubernetes's third party resource concept][tpr].
+[Kubernetes's Custom Resource Definitions API][crd].
 By using this mechanism, the Kubernetes API can be used to manage these `VM`
 resources alongside all other resources Kubernetes provides.
 
@@ -43,27 +45,29 @@ Example:
 [![asciicast](https://asciinema.org/a/96275.png)](https://asciinema.org/a/96275)
 
 
-# Getting Started
+# To start using KubeVirt
 
-**Demo** To try out our demo run
-```bash
-$ curl run.kubevirt.io/demo.sh | bash
-```
-on a recent Fedora or Ubuntu and follow [these steps](https://github.com/kubevirt/demo).
+Try our quickstart at [kubevirt.io](http://kubevirt.io/get_kubevirt/).
 
-**Developer** To set up a development environment please read our
+See our user documentation at [kubevirt.io/docs](http://kubevirt.io/user-guide).
+
+Once you have the basics, you can learn more about how to run KubeVirt and its newest features by taking a look at:
+
+ * [KubeVirt blog](https://kubevirt.io/blogs/)
+ * [KubeVirt Youtube channel](https://www.youtube.com/channel/UC2FH36TbZizw25pVT1P3C3g)
+
+# To start developing KubeVirt
+
+To set up a development environment please read our
 [Getting Started Guide](docs/getting-started.md). To learn how to contribute, please read our [contribution guide](https://github.com/kubevirt/kubevirt/blob/master/CONTRIBUTING.md).
-
-
-## Documentation
 
 You can learn more about how KubeVirt is designed (and why it is that way),
 and learn more about the major components by taking a look at
-[our documentation](docs/):
+[our developer documentation](docs/):
 
- * [Glossary](docs/glossary.md) - Explaining the most important terms
  * [Architecture](docs/architecture.md) - High-level view on the architecture
  * [Components](docs/components.md) - Detailed look at all components
+ * [API Reference](https://kubevirt.io/api-reference/)
 
 
 # Community
@@ -72,16 +76,16 @@ If you got enough of code and want to speak to people, then you got a couple
 of options:
 
 * Follow us on [Twitter](https://twitter.com/kubevirt)
-* Chat with us on IRC via [#kubevirt @ irc.freenode.net](https://kiwiirc.com/client/irc.freenode.net/kubevirt)
+* Chat with us on Slack via [#virtualization @ kubernetes.slack.com](https://kubernetes.slack.com/?redir=%2Farchives%2FC8ED7RKFE)
 * Discuss with us on the [kubevirt-dev Google Group](https://groups.google.com/forum/#!forum/kubevirt-dev)
 * Stay informed about designs and upcoming events by watching our [community content](https://github.com/kubevirt/community/)
-* Take a glance at [future planning](https://trello.com/b/50CuosoD/kubevirt)
 
 ## Related resources
 
  * [Kubernetes][k8s]
  * [Libvirt][libvirt]
  * [Cockpit][cockpit]
+ * [Kubevirt-ansible][kubevirt-ansible]
 
 ## Submitting patches
 
@@ -118,7 +122,11 @@ KubeVirt is distributed under the
 
 [//]: # (Reference links)
    [k8s]: https://kubernetes.io
-   [tpr]: http://kubernetes.io/docs/user-guide/thirdpartyresources/
+   [crd]: https://kubernetes.io/docs/tasks/access-kubernetes-api/extend-api-custom-resource-definitions/
    [ovirt]: https://www.ovirt.org
    [cockpit]: https://cockpit-project.org/
    [libvirt]: https://www.libvirt.org
+   [kubevirt-ansible]: https://github.com/kubevirt/kubevirt-ansible
+
+
+[![FOSSA Status](https://app.fossa.io/api/projects/git%2Bgithub.com%2Fkubevirt%2Fkubevirt.svg?type=large)](https://app.fossa.io/projects/git%2Bgithub.com%2Fkubevirt%2Fkubevirt?ref=badge_large)

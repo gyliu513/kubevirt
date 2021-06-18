@@ -22,9 +22,9 @@ package filter
 import (
 	"strings"
 
-	"github.com/emicklei/go-restful"
+	restful "github.com/emicklei/go-restful"
 
-	"kubevirt.io/kubevirt/pkg/logging"
+	"kubevirt.io/client-go/log"
 )
 
 func RequestLoggingFilter() restful.FilterFunction {
@@ -36,7 +36,7 @@ func RequestLoggingFilter() restful.FilterFunction {
 			}
 		}
 		chain.ProcessFilter(req, resp)
-		logging.DefaultLogger().Info().
+		log.Log.Level(log.INFO).
 			With("remoteAddress", strings.Split(req.Request.RemoteAddr, ":")[0]).
 			With("username", username).
 			With("method", req.Request.Method).

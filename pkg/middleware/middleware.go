@@ -20,21 +20,18 @@
 package middleware
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"runtime/debug"
 
 	"github.com/go-kit/kit/endpoint"
 	"golang.org/x/net/context"
-
-	"encoding/json"
-
-	"github.com/go-kit/kit/log"
-	"k8s.io/apimachinery/pkg/apis/meta/v1"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 
-	"kubevirt.io/kubevirt/pkg/logging"
-	"kubevirt.io/kubevirt/pkg/precond"
+	"kubevirt.io/client-go/log"
+	"kubevirt.io/client-go/precond"
 )
 
 type AppError interface {
@@ -112,9 +109,9 @@ func (k *KubernetesError) Body() []byte {
 // object not nil, string not empty, ...). With this middleware in place the service can throw an exception with a
 // precond.PreconditionError as payload. This middleware will catch that and translate it into an application
 // level PreconditionError. All other detected panics will be converted into an InternalServerError. In both cases it
-// is most likely that there is an error withing the application or a library. Long story short, this is about
+// is most likely that there is an error within the application or a library. Long story short, this is about
 // failing early in non recoverable situations.
-func InternalErrorMiddleware(logger log.Logger) endpoint.Middleware {
+func InternalErrorMiddleware() endpoint.Middleware {
 	return func(next endpoint.Endpoint) endpoint.Endpoint {
 		return func(ctx context.Context, request interface{}) (d interface{}, e error) {
 			var data interface{}
@@ -135,7 +132,7 @@ func InternalErrorMiddleware(logger log.Logger) endpoint.Middleware {
 						e = nil
 					}
 					// TODO log it with a logger at the right locations
-					logging.DefaultLogger().Critical().Msgf("stacktrace: %v", string(debug.Stack()))
+					log.Log.Criticalf("stacktrace: %v", string(debug.Stack()))
 				}
 			}()
 			data, err = next(ctx, request)
@@ -144,7 +141,7 @@ func InternalErrorMiddleware(logger log.Logger) endpoint.Middleware {
 			// For instance a service can just return an AppError instance as normal err and this check
 			// makes sure that our application error handler handles the response
 			if _, ok := err.(AppError); ok {
-				logging.DefaultLogger().Critical().Msg(err)
+				log.Log.Criticalf("%s", err)
 				return err, nil
 			}
 			return data, err
@@ -152,34 +149,6 @@ func InternalErrorMiddleware(logger log.Logger) endpoint.Middleware {
 	}
 }
 
-func NewResourceNotFoundError(msg string) *ResourceNotFoundError {
-	return &ResourceNotFoundError{appError{err: fmt.Errorf(msg)}}
-}
-
-func NewBadRequestError(msg string) *BadRequestError {
-	return &BadRequestError{appError{err: fmt.Errorf(msg)}}
-}
-
-func NewResourceExistsError(resource string, name string) *ResourceNotFoundError {
-	return NewResourceConflictError(fmt.Sprintf("%s with name %s already exists", resource, name))
-}
-
 func NewResourceConflictError(msg string) *ResourceNotFoundError {
 	return &ResourceNotFoundError{appError{err: fmt.Errorf(msg)}}
-}
-
-func NewInternalServerError(err error) *InternalServerError {
-	return &InternalServerError{appError{err: err}}
-}
-
-func NewKubernetesError(result rest.Result) *KubernetesError {
-	return &KubernetesError{result: result}
-}
-
-func NewUnprocessibleEntityError(err error) *UnprocessableEntityError {
-	return &UnprocessableEntityError{appError{err: err}}
-}
-
-func NewUnsupportedMediaType(mediaType string) *UnsupportedMediaTypeError {
-	return &UnsupportedMediaTypeError{appError{err: fmt.Errorf("Media Type(s) '%s' not supported", mediaType)}}
 }

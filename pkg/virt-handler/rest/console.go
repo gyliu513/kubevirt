@@ -21,143 +21,169 @@ package rest
 
 import (
 	"io"
+	"net"
 	"net/http"
+	"os"
+	"path"
+	"strconv"
+	"sync"
 
 	"github.com/emicklei/go-restful"
-	"github.com/gorilla/websocket"
-	"github.com/libvirt/libvirt-go"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/cache"
 
-	"kubevirt.io/kubevirt/pkg/api/v1"
-	"kubevirt.io/kubevirt/pkg/logging"
-	"kubevirt.io/kubevirt/pkg/virt-handler/virtwrap/cache"
-	"kubevirt.io/kubevirt/pkg/virt-handler/virtwrap/cli"
-	"kubevirt.io/kubevirt/pkg/virt-handler/virtwrap/errors"
+	v1 "kubevirt.io/client-go/api/v1"
+	"kubevirt.io/client-go/kubecli"
+	"kubevirt.io/client-go/log"
+	"kubevirt.io/kubevirt/pkg/virt-handler/isolation"
 )
 
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
+type ConsoleHandler struct {
+	podIsolationDetector isolation.PodIsolationDetector
+	serialStopChans      map[types.UID](chan struct{})
+	vncStopChans         map[types.UID](chan struct{})
+	serialLock           *sync.Mutex
+	vncLock              *sync.Mutex
+	vmiInformer          cache.SharedIndexInformer
 }
 
-type Console struct {
-	connection cli.Connection
+func NewConsoleHandler(podIsolationDetector isolation.PodIsolationDetector, vmiInformer cache.SharedIndexInformer) *ConsoleHandler {
+	return &ConsoleHandler{
+		podIsolationDetector: podIsolationDetector,
+		serialStopChans:      make(map[types.UID](chan struct{})),
+		vncStopChans:         make(map[types.UID](chan struct{})),
+		serialLock:           &sync.Mutex{},
+		vncLock:              &sync.Mutex{},
+		vmiInformer:          vmiInformer,
+	}
 }
 
-func NewConsoleResource(connection cli.Connection) *Console {
-	return &Console{connection: connection}
-}
-
-func (t *Console) Console(request *restful.Request, response *restful.Response) {
-	console := request.QueryParameter("console")
-	vmName := request.PathParameter("name")
-	namespace := request.PathParameter("namespace")
-	vm := v1.NewVMReferenceFromNameWithNS(namespace, vmName)
-	log := logging.DefaultLogger().Object(vm)
-	domain, err := t.connection.LookupDomainByName(cache.VMNamespaceKeyFunc(vm))
+func (t *ConsoleHandler) VNCHandler(request *restful.Request, response *restful.Response) {
+	vmi, code, err := getVMI(request, t.vmiInformer)
 	if err != nil {
-		if errors.IsNotFound(err) {
-			log.Error().Reason(err).Msg("Domain not found.")
-			response.WriteError(http.StatusNotFound, err)
-			return
-		} else {
-			response.WriteError(http.StatusInternalServerError, err)
-			log.Error().Reason(err).Msg("Failed to look up domain.")
-			return
-		}
-	}
-	defer domain.Free()
-
-	uid, err := domain.GetUUIDString()
-	if err != nil {
-		response.WriteError(http.StatusInternalServerError, err)
-		log.Error().Reason(err).Msg("Failed to look up domain UID.")
+		log.Log.Object(vmi).Reason(err).Error("Failed to retrieve VMI")
+		response.WriteError(code, err)
 		return
 	}
-	vm.GetObjectMeta().SetUID(types.UID(uid))
-	log = logging.DefaultLogger().Object(vm)
-
-	log.Info().Msgf("Opening connection to console %s", console)
-
-	consoleStream, err := t.connection.NewStream(0)
+	unixSocketPath, err := t.getUnixSocketPath(vmi, "virt-vnc")
 	if err != nil {
-		log.Error().Reason(err).Msg("Creating a consoleStream failed.")
-		response.WriteError(http.StatusInternalServerError, err)
-		return
-	}
-	defer consoleStream.Close()
-
-	log.Info().V(3).Msg("Stream created.")
-
-	err = domain.OpenConsole(console, consoleStream.UnderlyingStream(), libvirt.DOMAIN_CONSOLE_FORCE)
-	if err != nil {
-		response.WriteError(http.StatusInternalServerError, err)
-		log.Error().Reason(err).Msg("Failed to open console.")
-		return
-	}
-	log.Info().V(3).Msg("Connection to console created.")
-
-	errorChan := make(chan error)
-
-	ws, err := upgrader.Upgrade(response.ResponseWriter, request.Request, nil)
-	if err != nil {
-		log.Error().Reason(err).Msg("Failed to upgrade websocket connection.")
+		log.Log.Object(vmi).Reason(err).Error("Failed finding unix socket for VNC console")
 		response.WriteError(http.StatusBadRequest, err)
 		return
 	}
-	defer ws.Close()
+	uid := vmi.GetUID()
+	stopChn := newStopChan(uid, t.vncLock, t.vncStopChans)
+	cleanup := func() {
+		deleteStopChan(uid, stopChn, t.vncLock, t.vncStopChans)
+	}
+	t.stream(vmi, request, response, unixSocketPath, stopChn, cleanup)
+}
 
-	wsReadWriter := &TextReadWriter{ws}
+func (t *ConsoleHandler) SerialHandler(request *restful.Request, response *restful.Response) {
+	vmi, code, err := getVMI(request, t.vmiInformer)
+	if err != nil {
+		log.Log.Object(vmi).Reason(err).Error("Failed to retrieve VMI")
+		response.WriteError(code, err)
+		return
+	}
+	unixSocketPath, err := t.getUnixSocketPath(vmi, "virt-serial0")
+	if err != nil {
+		log.Log.Object(vmi).Reason(err).Error("Failed finding unix socket for serial console")
+		response.WriteError(http.StatusBadRequest, err)
+		return
+	}
+	uid := vmi.GetUID()
+	stopCh := newStopChan(uid, t.serialLock, t.serialStopChans)
+	cleanup := func() {
+		deleteStopChan(uid, stopCh, t.serialLock, t.serialStopChans)
+	}
+	t.stream(vmi, request, response, unixSocketPath, stopCh, cleanup)
+}
 
+func newStopChan(uid types.UID, lock *sync.Mutex, stopChans map[types.UID](chan struct{})) chan struct{} {
+	lock.Lock()
+	defer lock.Unlock()
+	// close current connection, if exists
+	if c, ok := stopChans[uid]; ok {
+		delete(stopChans, uid)
+		close(c)
+	}
+	// create a stop channel for the new connection
+	stopCh := make(chan struct{})
+	stopChans[uid] = stopCh
+	return stopCh
+}
+
+func deleteStopChan(uid types.UID, stopChn chan struct{}, lock *sync.Mutex, stopChans map[types.UID](chan struct{})) {
+	lock.Lock()
+	defer lock.Unlock()
+	// delete the stop channel from the cache if needed
+	if c, ok := stopChans[uid]; ok && c == stopChn {
+		delete(stopChans, uid)
+	}
+}
+
+func (t *ConsoleHandler) getUnixSocketPath(vmi *v1.VirtualMachineInstance, socketName string) (string, error) {
+	result, err := t.podIsolationDetector.Detect(vmi)
+	if err != nil {
+		return "", err
+	}
+	socketDir := path.Join("proc", strconv.Itoa(result.Pid()), "root", "var", "run", "kubevirt-private", string(vmi.GetUID()))
+	socketPath := path.Join(socketDir, socketName)
+	if _, err = os.Stat(socketPath); os.IsNotExist(err) {
+		return "", err
+	}
+
+	return socketPath, nil
+}
+
+type cleanupOnError func()
+
+func (t *ConsoleHandler) stream(vmi *v1.VirtualMachineInstance, request *restful.Request, response *restful.Response, unixSocketPath string, stopCh chan struct{}, cleanup cleanupOnError) {
+	var upgrader = kubecli.NewUpgrader()
+	clientSocket, err := upgrader.Upgrade(response.ResponseWriter, request.Request, nil)
+	if err != nil {
+		log.Log.Object(vmi).Reason(err).Error("Failed to upgrade client websocket connection")
+		response.WriteError(http.StatusInternalServerError, err)
+		return
+	}
+	defer clientSocket.Close()
+
+	log.Log.Object(vmi).Infof("Websocket connection upgraded")
+	log.Log.Object(vmi).Infof("Connecting to %s", unixSocketPath)
+
+	fd, err := net.Dial("unix", unixSocketPath)
+	if err != nil {
+		log.Log.Object(vmi).Reason(err).Errorf("failed to dial unix socket %s", unixSocketPath)
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	defer fd.Close()
+
+	log.Log.Object(vmi).Infof("Connected to %s", unixSocketPath)
+
+	errCh := make(chan error)
 	go func() {
-		_, err := io.Copy(consoleStream, wsReadWriter)
-		errorChan <- err
+		_, err := kubecli.CopyTo(clientSocket, fd)
+		log.Log.Object(vmi).Reason(err).Error("error encountered reading from unix socket")
+		errCh <- err
 	}()
 
 	go func() {
-		_, err := io.Copy(wsReadWriter, consoleStream)
-		errorChan <- err
+		_, err := kubecli.CopyFrom(fd, clientSocket)
+		log.Log.Object(vmi).Reason(err).Error("error encountered reading from client (virt-api) websocket")
+		errCh <- err
 	}()
 
-	err = <-errorChan
-
-	if err != nil {
-		log.Error().Reason(err).Msg("Proxying data between libvirt and the websocket failed.")
-	}
-
-	log.Info().V(3).Msg("Done.")
-	response.WriteHeader(http.StatusOK)
-}
-
-type TextReadWriter struct {
-	*websocket.Conn
-}
-
-func (s *TextReadWriter) Write(p []byte) (int, error) {
-	err := s.Conn.WriteMessage(websocket.TextMessage, p)
-	if err != nil {
-		return 0, s.err(err)
-	}
-	return len(p), nil
-}
-
-func (s *TextReadWriter) Read(p []byte) (int, error) {
-	_, r, err := s.Conn.NextReader()
-	if err != nil {
-		return 0, s.err(err)
-	}
-	n, err := r.Read(p)
-	return n, s.err(err)
-}
-
-func (s *TextReadWriter) err(err error) error {
-	if err == nil {
-		return nil
-	}
-	if e, ok := err.(*websocket.CloseError); ok {
-		if e.Code == websocket.CloseNormalClosure {
-			return io.EOF
+	select {
+	case <-stopCh:
+		break
+	case err := <-errCh:
+		if err != nil && err != io.EOF {
+			log.Log.Object(vmi).Reason(err).Error("Error in proxing websocket and unix socket")
+			response.WriteHeader(http.StatusInternalServerError)
 		}
+
+		cleanup()
 	}
-	return err
 }

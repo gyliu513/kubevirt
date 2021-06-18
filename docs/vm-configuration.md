@@ -1,4 +1,4 @@
-Virtual Machine Configuration
+﻿Virtual Machine Configuration
 =============================
 
 The configuration of virtual machines is one of the core tasks to accomplish
@@ -9,7 +9,7 @@ so there is a need to convert between the public resource descriptions and the
 libvirt XML document formats.
 
 This document will only consider the configuration associated with a specific
-instance  of a virtual machine. It will ignore the topic of 'templating' by
+instance of a virtual machine. It will ignore the topic of 'templating' by
 which a higher level generalised config can be used as a cookie cutter for
 creating many guests.
 
@@ -42,7 +42,7 @@ disks to use, or it may require license key reactivation. Changing the backend
 configuration is totally transparent to the guest (aside from performance
 differences inherent in different backend choices).
 
-![VM configuration diagram](vm-configuration.png "VM Configuration")
+![VMI configuration diagram](vm-configuration.png "VMI Configuration")
 
 
 Portability issues
@@ -150,17 +150,17 @@ NIC was unplugged since the snapshot was taken, even if the snapshot
 configuration has kept track of the existence of this NIC, the tenant may not
 be permitted to plug it into any host network. A snapshot can be taken
 regardless of whether a guest is running or inactive. The latter case, the
-snapshot would only cover disks, while in the format case, the snapshot would
+snapshot would only cover disks, while in the former case, the snapshot would
 cover disks, and optionally memory too.
 
 Bearing all this in mind there can be multiple configurations associated with
 a single instance of a virtual machine.
 
  1. Initial minimal tenant provided configuration
- 2. Expanded configuration for inactive VM
- 3. Expanded configuration for running VM reflecting desired state
- 4. Expanded configuration for running VM reflecting current state
- 5. Zero or many snapshots of the config for either inactive or running VM
+ 2. Expanded configuration for inactive VMI
+ 3. Expanded configuration for running VMI reflecting desired state
+ 4. Expanded configuration for running VMI reflecting current state
+ 5. Zero or many snapshots of the config for either inactive or running VMI
 
 An application may choose not to track all of these configurations explicitly.
 For example, by converting the minimal configuration, to the expanded inactive
@@ -172,7 +172,7 @@ adapt to changes dynamically. Similarly an application tracking the inactive
 configuration of the guest, has a choice about how to handle updates to reflect
 hotplug/unplug operations. An unplug operation could be applied to the inactive
 configuration unconditionally, without waiting for completion on the running
-VM. This would ensure that the device goes away on the next cold boot, even if
+VMI. This would ensure that the device goes away on the next cold boot, even if
 the guest OS ignores the hotunplug.
 
 
@@ -186,7 +186,7 @@ the domain XML, when managing individual virtual machines.
 The secret APIs in libvirt and their associated secret XML format provide a way
 to push security sensitive credentials into libvirt. This covers items such as
 network service client login passwords to be used by QEMU, credentials to be
-required for network servers run by QEMU (such as SPICE) and disk encryption
+required for network servers run by QEMU (such as VNC) and disk encryption
 keys or passphrases. These are not included in the domain XML document since
 these documents are widely shared and logged without concern for security
 sensitive data. Thus any part of the domain XML configuration that requires
@@ -223,7 +223,7 @@ the frontend virtual hardware, in order to enable a stable ABI to be attained.
 
 For the backend configuration, some parts can be automatically determined by
 kubevirt without requiring any user specification. For example, there is no need
-for the user to specify what VNC/SPICE port to use, or where to find the UEFI
+for the user to specify what VNC port to use, or where to find the UEFI
 BIOS files. It is sufficient to know that VNC or UEFI must be enabled. Other
 areas of backend configuration will require the user to specify resources in an
 abstracted manner. For example, instead of providing a file path for a disk,
@@ -266,3 +266,198 @@ the generation of multiple libvirt XML documents, the domain XML and associated
 documents for secrets, network filters and node devices. So there is not a strict
 1-1 mapping between the k8s API resource representation and the libvirt low
 level representation.
+
+Mapping rules for mapping libvirt XML to the KubeVirt API
+---------------------------------------------------------
+
+In order to support libvirt features, we tend to expose the libvirt API as much
+as possible in a 1:1 fashion. However, there are some differences which need to
+be taken into account:
+
+ 1. Our API is json/yaml and not xml.
+ 2. Host specifics are not exposed on the API.
+ 3. We want to make use of the golang xml/yaml/json mappers as much as possible.
+ 4. Ordering of devices can be important (e.g. for pci address assignment).
+ 5. KubeVirt also delivers specialized device types (mostly for network and
+    storage), which need to be fit into the existing structure.
+
+## Devices
+
+### All devices need to be ordered the same way libvirt internally orders them
+
+Libvirt sorts devices into buckets based on their types. This means that if no
+PCI addresses are specified by hand, libvirt will always assign lower PCI
+addresses to disks than to video devices. No matter in which order they appear
+in the XML. The order within devices of the same type is kept.
+
+The buckets are arranged in the following order:
+
+```
+emulator
+disk
+controller
+lease
+filesystem
+interface
+smartcard
+serial
+parallel
+console
+channel
+input
+tpm
+graphics
+sound
+video
+hostdev
+redirdev
+redirfilter
+hub
+watchdog
+memballoon
+rng
+nvram
+panic
+shmem
+memory
+iommu
+```
+
+In order to avoid surprises we need to keep that order also on the API level.
+
+### Use optional structs to represent different sources or targets
+
+By having an inlined wrapper-struct, containing optional structs corresponding
+to different types, we get a reasonable usable API and can maintain explicit
+mapping withing the code.
+
+Given a `Disk` which can have different `DiskSource`s
+
+```golang
+type Disk struct {
+    Name string `json:"name"`
+    DiskSource `json:"diskSource,inline"`
+}
+
+type DiskSource struct {
+   ISCSI *ISCSIDiskSource `json"iscsi,omitempty"`
+   NoCloud *NoCloudDiskSource `json"noCloud,omitempty"`
+}
+```
+
+it will map to
+
+```yaml
+disk:
+  name: mydisk
+  diskSource:
+    iscsi:
+      blub: bla
+disk:
+  name: mydisk
+  diskSource:
+    noCloud:
+      blub: bla
+```
+
+### Device Naming
+
+Every device has a mandatory name field. Amongst other benefits, this allows
+easy tracking of the devices for management applications and users, simplifies
+declarative hotplug and allows VirtualMachineInstancePresets to detect conflicts based
+on device names.
+
+### Specification changes
+
+Only the user changes the specification `spec` of a VirtualMachine. There
+exists no back-propagation of any defaults or devices which are added by
+libvirt on the node. A specification reflects the requirement from the user and
+will only be changed by the system by the apiserver on creation time or by
+initializers. After the VirtualMachine is accepted by the system and was
+processed by all initializers, controllers will ever only change `status` and
+`metadata` fields. VirtualMachineInstancePresets are an example of an initializer which
+can manipulate the spec, before the VirtualMachine is fully accepted by the
+system.
+
+### Devices inherited from the machine type
+They are normally not visible on the VirtualMachine specification. If there
+will be the need to represent them, then they need to be represented in the
+status.
+
+## Mapping decisions for specific device types
+
+### Disks
+
+`disk`, `lun`, `floppy` and `cdrom` are different structs within
+`devices.disks` array. They solely contain the guest side information of the
+disk. Each `devices.disks` entry contains one of them and `volumeName`
+attribute, which references a named entry in  `spec.volumes`:
+
+```yaml
+spec:
+  domain:
+    resources:
+      initial:
+        memory: 8Mi
+    devices:
+      disks:
+      - name: disk0
+        disk:
+          dev: vda
+        volumeName: volume0
+      - name: cdrom0
+        cdrom:
+          dev: vdb
+          readonly: true
+          tray: open
+        volumeName: volume1
+      - name: floppy0
+        floppy:
+          dev: vdc
+          readonly: true
+          tray: open
+        volumeName: volume2
+      - name: lun0
+        lun:
+          dev: vdd
+          readonly: true
+        volumeName: volume3
+  volumes:
+  - name: volume0
+    containerDisk:
+      image: test/image
+  - name: volume1
+    cloudInitNoCloud:
+      secretRef:
+        name: testsecret
+  - name: volume2
+    iscsi:
+      targetPortal: '1234'
+      iqn: ''
+      lun: 0
+      secretRef:
+        name: testsecret
+  - name: volume3
+    persistentVolumeClaim:
+      claimName: testclaim
+```
+
+#### Hotplug
+
+By default KubeVirt will now add a virtio-scsi controller to support hotplugging disks into a running VM. If for whatever reason you do not want this controller, you can stop KubeVirt from adding it by adding DisableHotplug to the devices section of the VM(I) spec
+
+```yaml
+spec:
+  domain:
+    devices:
+      disableHotplug: true
+      disks:
+      - name: disk0
+        disk:
+          dev: vda
+        volumeName: volume0
+  volumes:
+  - name: volume0
+    containerDisk:
+      image: test/image
+```

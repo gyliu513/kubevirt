@@ -17,16 +17,14 @@
  *
  */
 
-package virthandler_test
+package virthandler
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
-
 	"testing"
+
+	"kubevirt.io/client-go/testutils"
 )
 
 func TestVirtHandler(t *testing.T) {
-	RegisterFailHandler(Fail)
-	RunSpecs(t, "VirtHandler Suite")
+	testutils.KubeVirtTestSuiteSetup(t)
 }

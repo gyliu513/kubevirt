@@ -17,16 +17,14 @@
  *
  */
 
-package rest_test
+package rest
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
-
 	"testing"
+
+	"kubevirt.io/client-go/testutils"
 )
 
 func TestRest(t *testing.T) {
-	RegisterFailHandler(Fail)
-	RunSpecs(t, "Rest Suite")
+	testutils.KubeVirtTestSuiteSetup(t)
 }

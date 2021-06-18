@@ -20,13 +20,11 @@
 package watch
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
-
 	"testing"
+
+	"kubevirt.io/client-go/testutils"
 )
 
 func TestWatch(t *testing.T) {
-	RegisterFailHandler(Fail)
-	RunSpecs(t, "Watch Suite")
+	testutils.KubeVirtTestSuiteSetup(t)
 }
